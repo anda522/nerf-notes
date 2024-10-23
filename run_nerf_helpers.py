@@ -28,20 +28,22 @@ class Embedder:
         max_freq = self.kwargs['max_freq_log2']
         N_freqs = self.kwargs['num_freqs']
         
+        # 频率带生成方式，对数采样或线性采样
         if self.kwargs['log_sampling']:
             freq_bands = 2.**torch.linspace(0., max_freq, steps=N_freqs)
         else:
             freq_bands = torch.linspace(2.**0., 2.**max_freq, steps=N_freqs)
-            
+        # 每个输出位置对应3个输出维度(x,y,z)，所以每个函数添加都要+d            
         for freq in freq_bands:
             for p_fn in self.kwargs['periodic_fns']:
                 embed_fns.append(lambda x, p_fn=p_fn, freq=freq : p_fn(x * freq))
                 out_dim += d
-                    
+        # [sin(2^0*x), cos(2^0*x), sin(2^1*x), cos(2^1*x), ...]            
         self.embed_fns = embed_fns
         self.out_dim = out_dim
         
     def embed(self, inputs):
+        # [N,3]+[N,3]+...+[N,3] = [N,3*len(embed_fns)]
         return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
 
 
@@ -75,7 +77,7 @@ class NeRF(nn.Module):
         self.input_ch_views = input_ch_views
         self.skips = skips
         self.use_viewdirs = use_viewdirs
-        
+        # 输入层+7个线性隐藏层
         self.pts_linears = nn.ModuleList(
             [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
         
@@ -94,11 +96,13 @@ class NeRF(nn.Module):
             self.output_linear = nn.Linear(W, output_ch)
 
     def forward(self, x):
+        # 将输入数据拆分成点坐标和视角坐标数据
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
+            # 跳跃连接层需要将当前特征和原始输入做拼接
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
 
@@ -154,10 +158,16 @@ def get_rays(H, W, K, c2w):
     i, j = torch.meshgrid(torch.linspace(0, W-1, W), torch.linspace(0, H-1, H))  # pytorch's meshgrid has indexing='ij'
     i = i.t()
     j = j.t()
+    # 将像素的 x 坐标从图像平面变换到归一化相机坐标系
+    # 将像素的 y 坐标从图像平面变换到归一化相机坐标系（加负号是因为图像坐标的 y 轴向下，而相机坐标的 y 轴向上）
+    # 固定的 z 坐标，使光线方向指向负 z 方向
     dirs = torch.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -torch.ones_like(i)], -1)
     # Rotate ray directions from camera frame to the world frame
+    # 局部方向向量*每一帧的旋转矩阵=全局方向向量 (H,W,1,3)*(3,3)
+    # rays_d: [400, 400, 3]
     rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
+    # rays_o: [400, 400, 3]
     rays_o = c2w[:3,-1].expand(rays_d.shape)
     return rays_o, rays_d
 
