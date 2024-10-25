@@ -37,16 +37,23 @@ def batchify(fn, chunk):
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
+    # inputs: [1024, 64, 3] viewdirs: [1024, 3]
+    # [65536, 3]
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
+    # [65536, 90]
     embedded = embed_fn(inputs_flat)
 
     if viewdirs is not None:
+        # [1024, 64, 3]
         input_dirs = viewdirs[:,None].expand(inputs.shape)
+        # [65536, 3]
         input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
+        # [65536, 27]
         embedded_dirs = embeddirs_fn(input_dirs_flat)
         embedded = torch.cat([embedded, embedded_dirs], -1)
-
+    # [65536, 4]
     outputs_flat = batchify(fn, netchunk)(embedded)
+    # [1024, 64, 4]
     outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
     return outputs
 
@@ -94,6 +101,7 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
       acc_map: [batch_size]. Accumulated opacity (alpha) along a ray.
       extras: dict with everything returned by render_rays().
     """
+    # rays_o: [1024, 3], rays_d: [1024, 3]
     if c2w is not None:
         # special case to render full image
         rays_o, rays_d = get_rays(H, W, K, c2w)
@@ -278,7 +286,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         disp_map: [num_rays]. Disparity map. Inverse of depth map.
         acc_map: [num_rays]. Sum of weights along each ray.
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
-        depth_map: [num_rays]. Estimated distance to object.
+        depth_map: [num_rays]. Estimated distance to object. 估计到目标的距离
     """
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
 
@@ -397,27 +405,33 @@ def render_rays(ray_batch,
             t_rand = torch.Tensor(t_rand)
         # 随机采样点
         z_vals = lower + (upper - lower) * t_rand
-
+    # 得到每条射线在每个采样点的3D坐标
     pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples, 3]
 
-
+    # 将粗采样进一步细化并生成最终的渲染输出
 #     raw = run_network(pts)
+    # 从网络中得到场景特征（如颜色和密度）
     raw = network_query_fn(pts, viewdirs, network_fn)
+    # 将raw转化为RGB图、视差图（深度图的反转表示）、累积权重图、权重图、深度图
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
-
+    # 如果有细采样
     if N_importance > 0:
 
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
 
         z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
+        # 根据第一阶段的权重weights，在z_vals_mid的基础上生成N_importance个新的深度采样点z_samples
         z_samples = sample_pdf(z_vals_mid, weights[...,1:-1], N_importance, det=(perturb==0.), pytest=pytest)
+        # 避免梯度传递
         z_samples = z_samples.detach()
-
+        # 原有z_vals和新的采样点合并，并排序
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
+        # 重新计算新的采样点坐标
         pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples + N_importance, 3]
 
         run_fn = network_fn if network_fine is None else network_fine
 #         raw = run_network(pts, fn=run_fn)
+        # 使用新的采样点得到精细raw输出
         raw = network_query_fn(pts, viewdirs, run_fn)
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
@@ -908,6 +922,6 @@ def train():
 
 
 if __name__=='__main__':
-    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     train()
