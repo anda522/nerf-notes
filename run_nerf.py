@@ -37,10 +37,11 @@ def batchify(fn, chunk):
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
+    # 将inputs和viewdirs通过嵌入函数转化为高维表示，传递给网络进行处理
     # inputs: [1024, 64, 3] viewdirs: [1024, 3]
     # [65536, 3]
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
-    # [65536, 90]
+    # [65536, 63]
     embedded = embed_fn(inputs_flat)
 
     if viewdirs is not None:
@@ -50,8 +51,9 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
         input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
         # [65536, 27]
         embedded_dirs = embeddirs_fn(input_dirs_flat)
+        # [65536, 90]
         embedded = torch.cat([embedded, embedded_dirs], -1)
-    # [65536, 4]
+    # [65536, 4] 将所有射线上的采样点的位置编码数据输入网络 (RGB+密度)
     outputs_flat = batchify(fn, netchunk)(embedded)
     # [1024, 64, 4]
     outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
@@ -192,12 +194,13 @@ def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
     # 对于3D位置坐标，使用频率为10的PE，对于2D坐标，使用频率为4的PE
-    # fn, out_dim
+    # fn, out_dim: 63(包括输入和位置编码3+10*2*3)
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
 
     input_ch_views = 0
     embeddirs_fn = None
     if args.use_viewdirs:
+        # input_ch_views: 27(24 + 3)
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
@@ -288,6 +291,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object. 估计到目标的距离
     """
+    # raw: [1024, 64, 4] 射线数,采样点数,输出内容
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
 
     dists = z_vals[...,1:] - z_vals[...,:-1]
@@ -405,12 +409,12 @@ def render_rays(ray_batch,
             t_rand = torch.Tensor(t_rand)
         # 随机采样点
         z_vals = lower + (upper - lower) * t_rand
-    # 得到每条射线在每个采样点的3D坐标
+    # 得到每条射线在每个采样点的3D坐标 [1024, 64, 3] [射线数,采样点数,坐标]
     pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples, 3]
 
     # 将粗采样进一步细化并生成最终的渲染输出
 #     raw = run_network(pts)
-    # 从网络中得到场景特征（如颜色和密度）
+    # 从网络中得到场景特征（如颜色和密度） [1024, 64, 4]
     raw = network_query_fn(pts, viewdirs, network_fn)
     # 将raw转化为RGB图、视差图（深度图的反转表示）、累积权重图、权重图、深度图
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
@@ -805,6 +809,7 @@ def train():
                 batch_rays = torch.stack([rays_o, rays_d], 0)
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
+        # rays: [2, 1024(N_rand), 3]
         #####  Core optimization loop  #####
         rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
                                                 verbose=i < 10, retraw=True,
@@ -828,6 +833,7 @@ def train():
         ###   update learning rate   ###
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
+        # 学习率指数衰减 每经过decay_steps学习率衰减一次
         new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
         for param_group in optimizer.param_groups:
             param_group['lr'] = new_lrate

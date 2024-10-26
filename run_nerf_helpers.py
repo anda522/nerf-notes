@@ -158,6 +158,14 @@ def get_rays(H, W, K, c2w):
     i, j = torch.meshgrid(torch.linspace(0, W-1, W), torch.linspace(0, H-1, H))  # pytorch's meshgrid has indexing='ij'
     i = i.t()
     j = j.t()
+    # i: H * W
+    # [0, 1, ..., W - 1]
+    # [0, 1, ..., W - 1]
+    # j: H * W
+    # [0, 0, ..., 0]
+    # [1, 1, ..., 1]
+    # [H - 1, ..., H - 1]
+    # x,y方向都代表幅角
     # 将像素的 x 坐标从图像平面变换到归一化相机坐标系
     # 将像素的 y 坐标从图像平面变换到归一化相机坐标系（加负号是因为图像坐标的 y 轴向下，而相机坐标的 y 轴向上）
     # 固定的 z 坐标，使光线方向指向负 z 方向
